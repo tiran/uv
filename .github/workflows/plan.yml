@@ -72,7 +72,9 @@ env:
 
 jobs:
   plan:
-    runs-on: depot-ubuntu-24.04
+    # Upstream runs on Depot; forks fall back to a standard GitHub-hosted runner
+    # so the downstream lint/check jobs (which all `needs: plan`) can run.
+    runs-on: ${{ github.repository == 'astral-sh/uv' && 'depot-ubuntu-24.04' || 'ubuntu-latest' }}
     outputs:
       test-code: ${{ steps.plan.outputs.test_code }}
       review-security: ${{ steps.plan.outputs.review_security }}

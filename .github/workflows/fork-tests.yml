@@ -1,0 +1,93 @@
+name: Fork tests
+
+# Downstream-only helper for the native-tls patch.
+#
+# Upstream's CI test jobs run on org-specific runners (Depot/Namespace) and a
+# heavy integration harness (managed Python, gnome-keyring, custom btrfs/tmpfs/
+# minix filesystems, a nightly cargo profile). None of that is available on a
+# personal fork, so this workflow runs the tests relevant to the native-tls
+# change on a standard GitHub-hosted runner. It covers both TLS backends:
+#
+# * `rustls-tls` (default) -- the `uv-client` crate plus the crates that depend
+#   on it directly.
+# * `native-tls` -- the `uv-client` crate, which is where all backend-specific
+#   code lives; the dependent crates have no TLS-backend-specific code.
+#
+# It deliberately skips the end-to-end crates (`uv`, `uv-python`, `uv-bench`,
+# `uv-dev`, `uv-test`) that require the integration harness.
+
+on:
+  # Only `pull_request`: these branches always have an open PR, and adding a `push`
+  # trigger would start a second, redundant run that `cancel-in-progress` then cancels
+  # -- a cancelled run shows up as a failed check on the PR.
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # One in-flight run per branch; newer pushes cancel older runs of the same PR.
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  cargo-test:
+    name: "cargo test (${{ matrix.backend }})"
+    # Never run on the upstream repository; upstream CI already covers this.
+    if: ${{ github.repository != 'astral-sh/uv' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - backend: rustls-tls
+            args: >-
+              -p uv-client
+              -p uv-audit
+              -p uv-bin-install
+              -p uv-dispatch
+              -p uv-distribution
+              -p uv-publish
+              -p uv-requirements
+              -p uv-requirements-txt
+              -p uv-resolver
+              -p uv-settings
+          - backend: native-tls
+            # The certificate `it` tests need a rustls-based TLS test server and uv's rustls-only
+            # custom-certificate API, so they are gated behind `rustls-tls`. The remaining `it`
+            # tests are backend-agnostic and run here alongside the library unit tests, which cover
+            # the native-tls-specific code.
+            args: "-p uv-client --no-default-features --features native-tls"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: "Install OpenSSL headers"
+        if: ${{ matrix.backend == 'native-tls' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev
+
+      - name: "Install Rust toolchain"
+        # Installs the toolchain pinned by `rust-toolchain.toml`.
+        run: rustup toolchain install --profile minimal
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # Separate cache per backend so the two matrix legs don't evict each
+          # other (they build `uv-client` with different features).
+          key: ${{ matrix.backend }}
+          prefix-key: v1-fork-tests
+
+      - name: "Cargo test"
+        env:
+          RUST_BACKTRACE: 1
+          # Some uv-client tests build a bare `reqwest::Client::new()`, whose rustls platform
+          # verifier errors if `rustls-native-certs` loads no system roots (its default probe
+          # comes up empty on the runner). Point it at the standard Ubuntu bundle; this is the
+          # usual system-roots behavior and the certificate tests override it per-case.
+          SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
+        run: cargo test --profile fast-build ${{ matrix.args }}
