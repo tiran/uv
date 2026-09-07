@@ -231,6 +231,11 @@ impl<'a> TestServerBuilder<'a> {
 
         // Setup TLS Config (if any)
         let tls_acceptor = if let Some(server_cert) = self.server_cert {
+            // The native-tls client no longer pulls in rustls, so the rustls test server
+            // installs a process-default `CryptoProvider` itself. Idempotent: parallel
+            // callers get `Err`, which we ignore.
+            let _ = rustls::crypto::ring::default_provider().install_default();
+
             // Prepare Server Cert and KeyPair
             let server_key = PrivateKeyDer::try_from(server_cert.private.serialize_der()).unwrap();
             let server_cert = vec![CertificateDer::from(server_cert.public.der().to_vec())];

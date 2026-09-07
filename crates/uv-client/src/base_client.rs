@@ -606,18 +606,19 @@ impl<'a> BaseClientBuilder<'a> {
             Security::Insecure => client_builder.danger_accept_invalid_certs(true),
         };
 
-        let client_builder = client_builder.tls_backend_rustls();
+        let client_builder = client_builder.tls_backend_native();
 
         // Configure the certificate source.
         //
-        // Non-empty `SSL_CERT_FILE` and `SSL_CERT_DIR` values override the default certificate
-        // source, even when no valid certificates can be loaded from their configured paths.
+        // Non-empty `SSL_CERT_FILE` and `SSL_CERT_DIR` values (or `--cert`) override the default
+        // certificate source, even when no valid certificates can be loaded from their configured
+        // paths. Without custom roots we defer to the system trust store managed by the native TLS
+        // stack (e.g., OpenSSL), which is also populated from `SSL_CERT_FILE`/`SSL_CERT_DIR`. For
+        // compliance reasons we must not fall back to the bundled webpki roots.
         let client_builder = if let Some(custom_certs) = custom_certs {
             client_builder.tls_certs_only(custom_certs)
-        } else if self.system_certs {
-            client_builder
         } else {
-            client_builder.tls_certs_only(Certificates::webpki_roots().to_reqwest_certs())
+            client_builder
         };
 
         // Configure mTLS.
