@@ -80,7 +80,9 @@ jobs:
 
   test:
     needs: plan
-    if: ${{ needs.plan.outputs.test-code == 'true' }}
+    # Runs on org-only Depot/Namespace runners with a heavy integration harness;
+    # forks use the lighter `fork-tests.yml` workflow instead.
+    if: ${{ github.repository == 'astral-sh/uv' && needs.plan.outputs.test-code == 'true' }}
     uses: $/.github/workflows/test.yml
     with:
       save-rust-cache: ${{ needs.plan.outputs.save-rust-cache }}
@@ -88,14 +90,14 @@ jobs:
 
   test-windows-trampolines:
     needs: plan
-    if: ${{ needs.plan.outputs.test-windows-trampoline == 'true' }}
+    if: ${{ github.repository == 'astral-sh/uv' && needs.plan.outputs.test-windows-trampoline == 'true' }}
     uses: $/.github/workflows/test-windows-trampolines.yml
     with:
       trampoline-build: ${{ needs.plan.outputs.test-windows-trampoline-check-binary }}
 
   build-dev-binaries:
     needs: plan
-    if: ${{ needs.plan.outputs.test-code == 'true' }}
+    if: ${{ github.repository == 'astral-sh/uv' && needs.plan.outputs.test-code == 'true' }}
     uses: $/.github/workflows/build-dev-binaries.yml
     with:
       save-rust-cache: ${{ needs.plan.outputs.save-rust-cache }}
@@ -142,13 +144,13 @@ jobs:
 
   build-release-binaries:
     needs: plan
-    if: ${{ needs.plan.outputs.build-release-binaries == 'true' }}
+    if: ${{ github.repository == 'astral-sh/uv' && needs.plan.outputs.build-release-binaries == 'true' }}
     uses: $/.github/workflows/build-release-binaries.yml
     secrets: inherit
 
   build-docker:
     needs: plan
-    if: ${{ needs.plan.outputs.build-docker == 'true' }}
+    if: ${{ github.repository == 'astral-sh/uv' && needs.plan.outputs.build-docker == 'true' }}
     uses: $/.github/workflows/build-docker.yml
     with:
       push-dev: ${{ needs.plan.outputs.push-docker == 'true' }}
@@ -161,7 +163,7 @@ jobs:
 
   bench:
     needs: plan
-    if: ${{ needs.plan.outputs.run-bench == 'true' }}
+    if: ${{ github.repository == 'astral-sh/uv' && needs.plan.outputs.run-bench == 'true' }}
     uses: $/.github/workflows/bench.yml
     secrets: inherit
     with:
@@ -287,7 +289,7 @@ jobs:
       - check-generated-files
       - test
       - build-dev-binaries
-    runs-on: ubuntu-slim
+    runs-on: ${{ github.repository == 'astral-sh/uv' && 'ubuntu-slim' || 'ubuntu-latest' }}
     steps:
       - name: "Check required jobs passed"
         run: |
