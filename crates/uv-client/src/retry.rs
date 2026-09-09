@@ -4,12 +4,12 @@ use std::{io, iter};
 
 use http::status::StatusCode;
 use itertools::Itertools;
+use openssl::error::ErrorStack;
 use reqwest::Response;
 use reqwest_retry::policies::ExponentialBackoff;
 use reqwest_retry::{
     RetryPolicy, Retryable, RetryableStrategy, default_on_request_error, default_on_request_success,
 };
-use rustls::{AlertDescription, Error as RustlsError};
 use tracing::{debug, trace};
 use url::Url;
 
@@ -273,32 +273,57 @@ fn is_retryable_status_error(reqwest_err: &reqwest::Error) -> bool {
         || status == StatusCode::TOO_MANY_REQUESTS
 }
 
+/// OpenSSL library code for the TLS/SSL layer (`ERR_LIB_SSL`). Not re-exported by
+/// `openssl-sys`; the value is stable across OpenSSL 1.1.1 and 3.x.
+const ERR_LIB_SSL: i32 = 20;
+
+/// OpenSSL reason code for a failed local certificate verification
+/// (`SSL_R_CERTIFICATE_VERIFY_FAILED`).
+const SSL_R_CERTIFICATE_VERIFY_FAILED: i32 = 134;
+
+/// OpenSSL encodes a received or sent TLS alert as the reason code
+/// `SSL_AD_REASON_OFFSET + <alert description>` (see OpenSSL's `ssl.h`).
+const SSL_AD_REASON_OFFSET: i32 = 1000;
+
+/// TLS alert descriptions (per the IANA registry) that indicate a certificate
+/// problem. This mirrors the `rustls::AlertDescription` set that was matched
+/// before uv switched to the native-tls backend.
+const CERTIFICATE_ALERT_DESCRIPTIONS: &[i32] = &[
+    41,  // no_certificate (SSLv3)
+    42,  // bad_certificate
+    43,  // unsupported_certificate
+    44,  // certificate_revoked
+    45,  // certificate_expired
+    46,  // certificate_unknown
+    48,  // unknown_ca
+    49,  // access_denied
+    51,  // decrypt_error
+    111, // certificate_unobtainable
+    113, // bad_certificate_status_response
+    114, // bad_certificate_hash_value
+    116, // certificate_required
+];
+
+/// Whether a reqwest error was caused by a TLS certificate failure.
+///
+/// With the native-tls (OpenSSL) backend, a certificate failure surfaces as an
+/// [`ErrorStack`] nested in the error source chain. Both local verification
+/// failures and received certificate-related TLS alerts are treated as fatal,
+/// matching the behavior of the previous rustls backend. Non-certificate TLS
+/// failures (for example, a received `internal_error` alert) are left retryable.
 fn is_tls_certificate_error(reqwest_err: &reqwest::Error) -> bool {
-    let Some(rustls_error) = find_source::<RustlsError>(reqwest_err) else {
+    let Some(error_stack) = find_source::<ErrorStack>(reqwest_err) else {
         return false;
     };
 
-    // TODO(konsti): https://github.com/seanmonstar/reqwest/issues/2819#issuecomment-5032072023
-    match rustls_error {
-        RustlsError::InvalidCertificate(_) | RustlsError::NoCertificatesPresented => true,
-        RustlsError::AlertReceived(alert) => matches!(
-            alert,
-            AlertDescription::AccessDenied
-                | AlertDescription::BadCertificate
-                | AlertDescription::BadCertificateHashValue
-                | AlertDescription::BadCertificateStatusResponse
-                | AlertDescription::CertificateExpired
-                | AlertDescription::CertificateRequired
-                | AlertDescription::CertificateRevoked
-                | AlertDescription::CertificateUnknown
-                | AlertDescription::CertificateUnobtainable
-                | AlertDescription::DecryptError
-                | AlertDescription::NoCertificate
-                | AlertDescription::UnknownCA
-                | AlertDescription::UnsupportedCertificate
-        ),
-        _ => false,
-    }
+    error_stack.errors().iter().any(|error| {
+        if error.library_code() != ERR_LIB_SSL {
+            return false;
+        }
+        let reason = error.reason_code();
+        reason == SSL_R_CERTIFICATE_VERIFY_FAILED
+            || CERTIFICATE_ALERT_DESCRIPTIONS.contains(&(reason - SSL_AD_REASON_OFFSET))
+    })
 }
 
 /// Finds the request URL for diagnostics, including transparent middleware and retry wrappers.

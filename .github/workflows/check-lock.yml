@@ -10,7 +10,7 @@ env:
 jobs:
   lock:
     timeout-minutes: 10
-    runs-on: ubuntu-slim
+    runs-on: ${{ github.repository == 'astral-sh/uv' && 'ubuntu-slim' || 'ubuntu-latest' }}
     name: "uv lockfiles"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

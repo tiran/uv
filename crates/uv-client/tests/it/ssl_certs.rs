@@ -501,7 +501,7 @@ async fn send_tls_alert(stream: &mut TcpStream, alert_description: u8) -> Result
 }
 
 /// A self-signed server certificate is rejected when no custom certs are
-/// configured — the bundled webpki roots don't include our test CA.
+/// configured — the system trust store doesn't include our test CA.
 #[tokio::test]
 async fn test_no_custom_certs_rejects_self_signed() -> Result<()> {
     let cert = TestCertificate::new()?;
@@ -579,12 +579,16 @@ async fn test_non_certificate_tls_errors_are_retried() -> Result<()> {
     Ok(())
 }
 
+/// A TLS certificate failure never suggests enabling system certificates. The hint was a
+/// rustls-webpki-roots affordance: rustls defaulted to bundled roots, and the flag switched
+/// to the OS trust store. The native-tls (OpenSSL) backend always defers to the system trust
+/// store, so there is no bundled-roots state to escape and the hint would be vacuous.
 #[tokio::test]
-async fn test_tls_failure_suggests_system_certs_only_for_webpki_roots() -> Result<()> {
+async fn test_tls_failure_never_suggests_system_certs() -> Result<()> {
     let cert = TestCertificate::new()?;
     let custom_cert = TestCertificate::new()?;
     client()
-        .expect_index_fetch_system_certs_hint(&cert, true)
+        .expect_index_fetch_system_certs_hint(&cert, false)
         .await;
     client()
         .system_certs(true)
@@ -682,8 +686,8 @@ async fn test_cli_cert_overrides_environment() -> Result<()> {
     Ok(())
 }
 
-/// If `SSL_CERT_FILE` contains only an invalid trust anchor, the invalid
-/// certificate is ignored and the client falls back to webpki roots.
+/// If `SSL_CERT_FILE` contains only an invalid trust anchor, the invalid certificate is
+/// ignored, leaving an empty custom trust store, so the self-signed server is rejected.
 #[tokio::test]
 async fn test_ssl_cert_file_invalid_trust_anchor_falls_back() -> Result<()> {
     let cert = TestCertificate::new_with_duplicate_basic_constraints_ca_extension()?;
@@ -912,11 +916,11 @@ async fn test_system_certs_with_ssl_cert_dir_valid() -> Result<()> {
     Ok(())
 }
 
-/// Webpki roots include the CA for pypi.org, so a connection succeeds without
-/// any custom configuration.
+/// The system trust store includes the CA for pypi.org, so a connection succeeds without any
+/// custom configuration (the native-tls backend defers to the system store by default).
 #[cfg(feature = "test-pypi")]
 #[tokio::test]
-async fn test_webpki_roots_trusts_pypi() -> Result<()> {
+async fn test_default_trusts_pypi_via_system_store() -> Result<()> {
     client()
         .expect_https_connect_succeeds_for_host("pypi.org")
         .await;

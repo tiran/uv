@@ -197,21 +197,6 @@ impl Display for InvalidCertificateWarning {
 pub struct Certificates(Vec<CertificateDer<'static>>);
 
 impl Certificates {
-    /// Load the bundled Mozilla root certificates.
-    ///
-    /// We use `webpki-root-certs` (which gives us [`CertificateDer`] values) rather than the more
-    /// space-efficient `webpki-roots` (pre-parsed [`TrustAnchor`] values) because reqwest's
-    /// [`ClientBuilder::tls_certs_only`] accepts [`Certificate`] values built from DER bytes. Using
-    /// `webpki-roots` would require constructing a [`rustls::ClientConfig`] manually and passing it
-    /// via the semver-unstable [`ClientBuilder::tls_backend_preconfigured`], which also means
-    /// taking ownership of ALPN, SNI, certificate verification, and mTLS configuration that reqwest
-    /// otherwise handles for us.
-    pub(crate) fn webpki_roots() -> Self {
-        // Each [`CertificateDer`] in [`webpki_root_certs::TLS_SERVER_ROOT_CERTS`] borrows from static
-        // data, so cloning into the [`Vec`] only copies the fat pointer, not the certificate bytes.
-        Self(webpki_root_certs::TLS_SERVER_ROOT_CERTS.to_vec())
-    }
-
     /// Load a custom CA certificate bundle from an explicit path.
     ///
     /// Unlike [`Self::from_ssl_cert_file`], an invalid path or a bundle without any valid
@@ -487,16 +472,32 @@ pub enum CertificateFileError {
     NoValidCertificates(PathBuf),
 }
 
-/// Return the `Identity` from the provided file.
+/// Return the [`Identity`] from the provided file.
+///
+/// The file is expected to contain a PEM-encoded certificate chain and private key.
+/// The native-tls backend's [`Identity::from_pkcs8_pem`] requires the key argument to start
+/// with the private key PEM header, so we locate the key within the buffer and pass a slice
+/// starting there. The certificate argument is parsed by OpenSSL's `X509::stack_from_pem`,
+/// which only extracts certificate blocks and ignores private key blocks, so we pass the
+/// full buffer as-is.
 pub(crate) fn read_identity(
     ssl_client_cert: &std::ffi::OsStr,
 ) -> Result<Identity, CertificateError> {
+    const KEY_MARKER: &[u8] = b"-----BEGIN PRIVATE KEY-----";
+
     let mut buf = Vec::new();
     fs_err::File::open(ssl_client_cert)?.read_to_end(&mut buf)?;
-    Identity::from_pem(&buf).map_err(|tls_err| {
-        debug_assert!(tls_err.is_builder(), "must be a rustls::Error internally");
-        CertificateError::Reqwest(tls_err)
-    })
+
+    let key_start = buf
+        .windows(KEY_MARKER.len())
+        .position(|window| window == KEY_MARKER)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "no PKCS#8 private key found in client certificate file",
+            )
+        })?;
+    Identity::from_pkcs8_pem(&buf, &buf[key_start..]).map_err(CertificateError::Reqwest)
 }
 
 #[cfg(test)]
@@ -607,11 +608,5 @@ mod tests {
         merged.merge(second);
 
         assert_eq!(merged.iter().count(), 1);
-    }
-
-    #[test]
-    fn test_webpki_roots_not_empty() {
-        let certs = Certificates::webpki_roots();
-        assert!(certs.iter().count() > 0);
     }
 }
