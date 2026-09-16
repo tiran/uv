@@ -1,0 +1,67 @@
+name: Fork tests
+
+# Downstream-only helper for the native-tls patch.
+#
+# Upstream's CI test jobs run on org-specific runners (Depot/Namespace) and a
+# heavy integration harness (managed Python, gnome-keyring, custom btrfs/tmpfs/
+# minix filesystems, a nightly cargo profile). None of that is available on a
+# personal fork, so pushes and pull requests on a fork run only the lint/format
+# jobs and never execute the Rust tests.
+#
+# This workflow runs the tests relevant to the native-tls change -- the
+# `uv-client` crate plus the crates that depend on it directly -- on a standard
+# GitHub-hosted runner, so they execute on a fork without an upstream pull
+# request. It deliberately skips the end-to-end crates (`uv`, `uv-python`,
+# `uv-bench`, `uv-dev`, `uv-test`) that require the integration harness.
+
+on:
+  # Only `pull_request`: this branch always has an open PR, and adding a `push`
+  # trigger would start a second, redundant run that `cancel-in-progress` then cancels
+  # -- a cancelled run shows up as a failed check on the PR.
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # One in-flight run per branch; newer pushes cancel older runs of the same PR.
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  cargo-test:
+    name: "cargo test (uv-client + dependents)"
+    # Never run on the upstream repository; upstream CI already covers this.
+    if: ${{ github.repository != 'astral-sh/uv' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: "Install Rust toolchain"
+        # Installs the toolchain pinned by `rust-toolchain.toml`.
+        run: rustup toolchain install --profile minimal
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          prefix-key: v1-fork-tests
+
+      - name: "Cargo test"
+        env:
+          RUST_BACKTRACE: 1
+        run: |
+          cargo test \
+            --profile fast-build \
+            -p uv-client \
+            -p uv-audit \
+            -p uv-bin-install \
+            -p uv-dispatch \
+            -p uv-distribution \
+            -p uv-publish \
+            -p uv-requirements \
+            -p uv-requirements-txt \
+            -p uv-resolver \
+            -p uv-settings
