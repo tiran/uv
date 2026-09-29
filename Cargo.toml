@@ -26,7 +26,7 @@ uv-cache = { version = "0.0.88", path = "crates/uv-cache" }
 uv-cache-info = { version = "0.0.88", path = "crates/uv-cache-info" }
 uv-cache-key = { version = "0.0.88", path = "crates/uv-cache-key" }
 uv-cli = { version = "0.0.88", path = "crates/uv-cli" }
-uv-client = { version = "0.0.88", path = "crates/uv-client" }
+uv-client = { version = "0.0.88", path = "crates/uv-client", default-features = false }
 uv-configuration = { version = "0.0.88", path = "crates/uv-configuration" }
 uv-console = { version = "0.0.88", path = "crates/uv-console" }
 uv-dirs = { version = "0.0.88", path = "crates/uv-dirs" }
@@ -233,6 +233,8 @@ reqsign = { version = "0.20.0", features = [
   "google",
   "default-context",
 ], default-features = false }
+# The rustls backend is selected by `uv-client`'s `aws-lc`/`ossl` features, not here: `aws-lc` uses
+# `reqwest/rustls` (bundled aws-lc-rs), `ossl` uses `reqwest/rustls-no-provider`.
 reqwest = { version = "0.13.1", default-features = false, features = [
   "json",
   "gzip",
@@ -240,7 +242,6 @@ reqwest = { version = "0.13.1", default-features = false, features = [
   "zstd",
   "stream",
   "system-proxy",
-  "rustls",
   "socks",
   "multipart",
   "http2",
@@ -257,6 +258,10 @@ rkyv = { version = "0.8.14", default-features = false, features = ["bytecheck", 
 rmp-serde = { version = "1.3.0", default-features = false }
 rustc-hash = { version = "2.0.0", default-features = false, features = ["std"] }
 rustls-native-certs = { version = "0.8.3", default-features = false }
+# System-OpenSSL 3.x crypto provider for rustls 0.23; keeps default `tls12`. Used by the `ossl` backend.
+rustls-native-ossl = { version = "0.3.0" }
+# Parses `SSL_CLIENT_CERT` PEM into the custom rustls config the `ossl` backend builds for mTLS.
+rustls-pemfile = { version = "2.2.0", default-features = false, features = ["std"] }
 rustls-pki-types = { version = "1.14.0", default-features = false, features = ["alloc"] }
 rustix = { version = "1.0.0", default-features = false, features = [
   "fs",
@@ -391,10 +396,10 @@ rcgen = { version = "0.14.5", features = [
   "pem",
   "ring",
 ], default-features = false }
+# The crypto provider is selected by `uv-client`: `aws-lc` adds `aws_lc_rs` + `prefer-post-quantum`;
+# `ossl` installs a system-OpenSSL provider at runtime instead.
 rustls = { version = "0.23.36", default-features = false, features = [
-  "aws_lc_rs",
   "logging",
-  "prefer-post-quantum",
   "std",
   "tls12",
 ] }

@@ -81,9 +81,13 @@ name = "uv-dev"
 required-features = ["dev"]
 
 [features]
-default = ["performance"]
+# `uv-client` is `default-features = false` at the workspace level, so a crypto provider backend must
+# be re-enabled here for the dev CLI to make HTTPS requests. Defaults to `aws-lc`, like the `uv` binary.
+default = ["performance", "aws-lc"]
 # Actually build the dev CLI.
 dev = []
+aws-lc = ["uv-client/aws-lc"]
+ossl = ["uv-client/ossl"]
 performance = ["performance-memory-allocator"]
 performance-memory-allocator = ["dep:uv-performance-memory-allocator"]
 render = ["poloto", "resvg", "tagu"]

@@ -158,8 +158,12 @@ nix = { workspace = true }
 uv-unix = { workspace = true }
 
 [features]
-default = ["performance", "test-defaults"]
+default = ["performance", "test-defaults", "aws-lc"]
 native-auth = []
+# rustls crypto provider backend, forwarded to `uv-client`. `aws-lc` is the default; `ossl` uses
+# system OpenSSL 3.x. Build the OpenSSL variant with `--no-default-features --features ossl`.
+aws-lc = ["uv-client/aws-lc"]
+ossl = ["uv-client/ossl"]
 # Use better memory allocators, etc.
 performance = ["performance-memory-allocator"]
 performance-memory-allocator = ["dep:uv-performance-memory-allocator"]

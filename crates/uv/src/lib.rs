@@ -3042,6 +3042,10 @@ where
     #[cfg(windows)]
     uv_windows::install_unhandled_exception_handler();
 
+    // Install the rustls crypto provider before any TLS client is built. No-op for the `aws-lc`
+    // backend; installs the system-OpenSSL provider for the `ossl` backend.
+    uv_client::install_crypto_provider();
+
     // Set the `UV` variable to the current executable so it is implicitly propagated to all child
     // processes, e.g., in `uv run`.
     if let Ok(current_exe) = std::env::current_exe() {

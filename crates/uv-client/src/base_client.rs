@@ -64,6 +64,26 @@ pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// timeout on the entire upload.
 pub const DEFAULT_READ_TIMEOUT_UPLOAD: Duration = Duration::from_mins(15);
 
+/// Apply the `SSL_CLIENT_CERT` client identity (mTLS) to a reqwest builder, if the variable is set.
+///
+/// An unreadable or invalid identity is warned about and skipped rather than being fatal.
+fn configure_mtls(client_builder: ClientBuilder) -> ClientBuilder {
+    let Some(ssl_client_cert) = env::var_os(EnvVars::SSL_CLIENT_CERT) else {
+        return client_builder;
+    };
+    match read_identity(&ssl_client_cert) {
+        Ok(identity) => client_builder.identity(identity),
+        Err(err) => {
+            warn_user_once_with_chain!(
+                anyhow::Error::from(err)
+                    .context("Ignoring invalid `SSL_CLIENT_CERT`")
+                    .as_ref()
+            );
+            client_builder
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum ClientBuildError {
     #[error("failed to build HTTP client")]
@@ -72,6 +92,9 @@ pub enum ClientBuildError {
     Credentials(#[from] CredentialsFromUrlError),
     #[error(transparent)]
     IndexCredentials(#[from] IndexCredentialsError),
+    #[cfg(feature = "ossl")]
+    #[error("Failed to configure the OpenSSL TLS backend")]
+    OsslTls(#[source] anyhow::Error),
 }
 
 impl ClientBuildError {
@@ -80,6 +103,8 @@ impl ClientBuildError {
         match self {
             Self::Credentials(_) | Self::IndexCredentials(_) => true,
             Self::Reqwest(_) => false,
+            #[cfg(feature = "ossl")]
+            Self::OsslTls(_) => false,
         }
     }
 }
@@ -564,7 +589,9 @@ impl<'a> BaseClientBuilder<'a> {
             .map(Certificates::to_reqwest_certs);
         let certificate_source = if custom_certs.is_some() {
             CertificateSource::Custom
-        } else if self.system_certs {
+        } else if cfg!(feature = "ossl") || self.system_certs {
+            // The OpenSSL backend always uses the system trust store; the bundled webpki roots are
+            // never used, so `--system-certs` is implied.
             CertificateSource::System
         } else {
             CertificateSource::WebPki
@@ -611,41 +638,53 @@ impl<'a> BaseClientBuilder<'a> {
             .connect_timeout(connect_timeout)
             .redirect(redirect_policy.reqwest_policy());
 
-        // If necessary, accept invalid certificates.
-        let client_builder = match security {
-            Security::Secure => client_builder,
-            Security::Insecure => client_builder.danger_accept_invalid_certs(true),
+        // Select the TLS backend and certificate verification. reqwest builds the rustls config
+        // (with the compiled-in crypto provider) and verifies certificates via rustls-webpki.
+        #[cfg(not(feature = "ossl"))]
+        let client_builder = {
+            // If necessary, accept invalid certificates.
+            let client_builder = match security {
+                Security::Secure => client_builder,
+                Security::Insecure => client_builder.danger_accept_invalid_certs(true),
+            };
+
+            let client_builder = client_builder.tls_backend_rustls();
+
+            // Configure the certificate source.
+            //
+            // Non-empty `SSL_CERT_FILE` and `SSL_CERT_DIR` values override the default certificate
+            // source, even when no valid certificates can be loaded from their configured paths.
+            let client_builder = if let Some(custom_certs) = custom_certs {
+                client_builder.tls_certs_only(custom_certs)
+            } else if self.system_certs {
+                client_builder
+            } else {
+                client_builder.tls_certs_only(Certificates::webpki_roots().to_reqwest_certs())
+            };
+
+            configure_mtls(client_builder)
         };
 
-        let client_builder = client_builder.tls_backend_rustls();
-
-        // Configure the certificate source.
-        //
-        // Non-empty `SSL_CERT_FILE` and `SSL_CERT_DIR` values override the default certificate
-        // source, even when no valid certificates can be loaded from their configured paths.
-        let client_builder = if let Some(custom_certs) = custom_certs {
-            client_builder.tls_certs_only(custom_certs)
-        } else if self.system_certs {
-            client_builder
-        } else {
-            client_builder.tls_certs_only(Certificates::webpki_roots().to_reqwest_certs())
-        };
-
-        // Configure mTLS.
-        let client_builder = if let Some(ssl_client_cert) = env::var_os(EnvVars::SSL_CLIENT_CERT) {
-            match read_identity(&ssl_client_cert) {
-                Ok(identity) => client_builder.identity(identity),
-                Err(err) => {
-                    warn_user_once_with_chain!(
-                        anyhow::Error::from(err)
-                            .context("Ignoring invalid `SSL_CLIENT_CERT`")
-                            .as_ref()
-                    );
-                    client_builder
+        // The OpenSSL backend hands reqwest a fully built rustls config so certificates are verified
+        // through OpenSSL's own X.509 machinery (chain and hostname), rather than rustls-webpki.
+        #[cfg(feature = "ossl")]
+        let client_builder = {
+            // Roots (system store plus any custom certificates) and mTLS are configured inside the
+            // rustls config, not through reqwest.
+            let _ = custom_certs;
+            match security {
+                Security::Secure => {
+                    let config = crate::tls_ossl::client_config(self.custom_certificates.as_ref())
+                        .map_err(ClientBuildError::OsslTls)?;
+                    client_builder.tls_backend_preconfigured(config)
                 }
+                // Verification is disabled; crypto still runs through the installed OpenSSL provider.
+                Security::Insecure => configure_mtls(
+                    client_builder
+                        .tls_backend_rustls()
+                        .danger_accept_invalid_certs(true),
+                ),
             }
-        } else {
-            client_builder
         };
 
         // apply proxies

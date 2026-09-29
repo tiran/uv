@@ -206,10 +206,20 @@ impl Certificates {
     /// via the semver-unstable [`ClientBuilder::tls_backend_preconfigured`], which also means
     /// taking ownership of ALPN, SNI, certificate verification, and mTLS configuration that reqwest
     /// otherwise handles for us.
+    #[cfg(not(feature = "ossl"))]
     pub(crate) fn webpki_roots() -> Self {
         // Each [`CertificateDer`] in [`webpki_root_certs::TLS_SERVER_ROOT_CERTS`] borrows from static
         // data, so cloning into the [`Vec`] only copies the fat pointer, not the certificate bytes.
         Self(webpki_root_certs::TLS_SERVER_ROOT_CERTS.to_vec())
+    }
+
+    /// The certificates as DER, for building a rustls verifier directly.
+    ///
+    /// The `ossl` backend feeds these to OpenSSL's certificate verifier instead of going through
+    /// reqwest's `tls_certs_only`.
+    #[cfg(feature = "ossl")]
+    pub(crate) fn der(&self) -> &[CertificateDer<'static>] {
+        &self.0
     }
 
     /// Load a custom CA certificate bundle from an explicit path.
